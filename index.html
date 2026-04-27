@@ -137,6 +137,7 @@ input[type=file] { display: none; }
 .cal-cell.today-cell { border-color: #1D9E75; border-width: 1.5px; }
 .cal-cell.selected-cell { border-color: #1D9E75; border-width: 2px; background: #EAF3DE; }
 .cal-cell.has-ord { background: #F4FAF0; }
+.cal-cell.holiday-cell { background: #FFF5F5; }
 .cal-num { font-size: 11px; color: #6E6E73; }
 .cal-cell.today-cell .cal-num { color: #1D9E75; font-weight: 500; }
 .cal-dots { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
@@ -219,14 +220,29 @@ const SHOP_TEL = '010-3036-6611';
 const COLORS = ['#E74C3C','#808080','#F39C12','#9B59B6','#27AE60','#1ABC9C','#E91E63','#D35400','#2980B9','#16A085'];
 const MEMBER_DEFAULT = ['남정','최규호','오세윤','서기영','김진용','김태완','서유정','박수빈','송호범'];
 
+// ── 공휴일 (2025~2026) ──────────────────────────────
+const HOLIDAYS = {
+  '2025-01-01':'신정','2025-01-28':'설날연휴','2025-01-29':'설날','2025-01-30':'설날연휴',
+  '2025-03-01':'삼일절','2025-05-05':'어린이날','2025-05-06':'대체공휴일','2025-06-06':'현충일',
+  '2025-08-15':'광복절','2025-10-03':'개천절','2025-10-05':'추석연휴','2025-10-06':'추석',
+  '2025-10-07':'추석연휴','2025-10-08':'대체공휴일','2025-10-09':'한글날','2025-12-25':'성탄절',
+  '2026-01-01':'신정','2026-02-16':'설날연휴','2026-02-17':'설날','2026-02-18':'설날연휴',
+  '2026-03-01':'삼일절','2026-05-05':'어린이날','2026-06-06':'현충일','2026-08-15':'광복절',
+  '2026-09-23':'추석연휴','2026-09-24':'추석','2026-09-25':'추석연휴',
+  '2026-10-03':'개천절','2026-10-09':'한글날','2026-12-25':'성탄절',
+};
+function isHoliday(key){ return !!HOLIDAYS[key]; }
+function holidayName(key){ return HOLIDAYS[key]||''; }
+
 let state = {
   members: [...MEMBER_DEFAULT],
   orders: {},
   salads: {},
-  visitors: {},   // dateKey → 방문자 수
-  settled: {},    // 'YYYY-MM' → {name: true/false}
+  visitors: {},
+  settled: {},
   confirmed: {},
   menus: {},
+  menuNotices: {},   // weekKey → AI 분석 한줄 공지
   price: PRICE_DEFAULT,
   currentTab: 'today',
   calYear: new Date().getFullYear(),
@@ -243,7 +259,6 @@ function tomorrowKey(){ const n=new Date(); n.setDate(n.getDate()+1); return gk(
 function getAC(name){ const i=state.members.indexOf(name); return COLORS[i>=0?i%COLORS.length:COLORS.length-1]; }
 function getInit(name){ return name[0]; }
 
-// 시간 상태: 'open'(4시前 신청가능), 'change'(당일4시~익일9:30 변경가능), 'closed'(9:30이후 완전마감)
 function getTimeStatus(){
   const now=new Date(), h=now.getHours(), m=now.getMinutes();
   const minTotal = h*60+m;
@@ -253,7 +268,6 @@ function getTimeStatus(){
   return 'closed';
 }
 
-// ── Firebase 실시간 연동 ──────────────────────────
 let firebaseReady = false;
 function initFirebase(){
   loadMenusLocal();
@@ -269,7 +283,7 @@ function initFirebase(){
       state.settled   = data.settled   || {};
       state.confirmed = data.confirmed || {};
       state.price     = data.price     || PRICE_DEFAULT;
-      // 메뉴 이미지 URL (Cloudinary)
+      state.menuNotices = data.menuNotices || {};
       if(data.menus){
         Object.keys(data.menus).forEach(k=>{
           const wk=k.replace(/_/g,'-').replace('W-','W');
@@ -287,17 +301,17 @@ function initFirebase(){
 
 function save(){
   dbRef.set({
-    members:   state.members,
-    orders:    state.orders,
-    salads:    state.salads,
-    visitors:  state.visitors,
-    settled:   state.settled,
-    confirmed: state.confirmed,
-    price:     state.price
+    members:      state.members,
+    orders:       state.orders,
+    salads:       state.salads,
+    visitors:     state.visitors,
+    settled:      state.settled,
+    confirmed:    state.confirmed,
+    price:        state.price,
+    menuNotices:  state.menuNotices,
   }).catch(e => showToast('저장 실패 - 인터넷 연결 확인'));
 }
 
-// ── Cloudinary 메뉴 이미지 업로드 ──────────────────
 const CLOUDINARY_CLOUD = 'dkeapeze3';
 const CLOUDINARY_PRESET = 'vidcqx51';
 
@@ -314,7 +328,6 @@ async function uploadToCloudinary(file){
   return data.secure_url;
 }
 
-// 메뉴 URL을 Firebase에 저장 (모두 공유)
 function saveMenu(wk, url){
   dbRef.child('menus').child(wk.replace(/[^a-zA-Z0-9]/g,'_')).set(url);
 }
@@ -365,7 +378,6 @@ function updateBadge(){
 function switchTab(t){
   state.currentTab=t;
   if(t==='calendar'){
-    // 월별 현황 진입 시 내일 날짜 자동 선택
     const tmr=new Date(); tmr.setDate(tmr.getDate()+1);
     state.selectedDay=gk(tmr.getFullYear(),tmr.getMonth(),tmr.getDate());
     state.calYear=tmr.getFullYear();
@@ -441,14 +453,34 @@ function confirmOrder(){
   if(orders.length===0&&salads.length===0){ showToast('주문 인원이 없어요'); return; }
   const smsText=buildSmsText(tKey,orders,salads);
   showModal(`<div class="modal-box">
-    <div class="modal-title">📱 주문 확정 & 문자 발송</div>
-    <div class="modal-sub">아래 문구를 복사해서 ${SHOP_NAME}(${SHOP_TEL})으로 문자 보내주세요.</div>
+    <div class="modal-title">📱 주문 확정 & 발송</div>
+    <div class="modal-sub">아래 문구를 ${SHOP_NAME}(${SHOP_TEL})으로 보내주세요.</div>
     <div class="modal-sms-box">${smsText}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+      <button onclick="doConfirmSms()" style="padding:11px 8px;border:none;border-radius:10px;background:#1D9E75;color:white;font-size:13px;font-weight:600;cursor:pointer;">📱 문자로 보내기</button>
+      <button onclick="doConfirmShare()" style="padding:11px 8px;border:none;border-radius:10px;background:#FEE500;color:#3C1E1E;font-size:13px;font-weight:600;cursor:pointer;">💬 카카오/공유</button>
+    </div>
     <div class="modal-actions">
       <button class="modal-btn-cancel" onclick="hideModal()">취소</button>
-      <button class="modal-btn-ok" onclick="doConfirmOrder()">✅ 확정 + 복사</button>
+      <button class="modal-btn-ok" onclick="doConfirmOrder()">📋 복사 후 확정</button>
     </div>
   </div>`);
+}
+function doConfirmSms(){
+  const tKey=tomorrowKey();
+  const orders=state.orders[tKey]||[], salads=state.salads[tKey]||[];
+  const smsText=buildSmsText(tKey,orders,salads);
+  state.confirmed[tKey]=true; save(); hideModal(); render();
+  window.open(`sms:${SHOP_TEL}?body=${encodeURIComponent(smsText)}`,'_self');
+  showToast('✅ 확정! 문자 앱이 열려요');
+}
+async function doConfirmShare(){
+  const tKey=tomorrowKey();
+  const orders=state.orders[tKey]||[], salads=state.salads[tKey]||[];
+  const smsText=buildSmsText(tKey,orders,salads);
+  state.confirmed[tKey]=true; save(); hideModal(); render();
+  if(navigator.share){ try{ await navigator.share({title:'도시락 주문',text:smsText}); showToast('✅ 확정 & 공유 완료!'); }catch(e){ showToast('공유 취소됨'); } }
+  else { navigator.clipboard.writeText(smsText).catch(()=>{}); showToast('✅ 확정! 클립보드에 복사됐어요'); }
 }
 function doConfirmOrder(){
   const tKey=tomorrowKey();
@@ -481,8 +513,19 @@ function copyShare(){
   const tKey=tomorrowKey();
   const orders=state.orders[tKey]||[];
   const salads=state.salads[tKey]||[];
-  const text=buildShareText(tKey,orders,salads);
+  const text=buildSmsText(tKey,orders,salads);
   navigator.clipboard.writeText(text).then(()=>showToast('📋 클립보드에 복사됐어요!')).catch(()=>showToast('복사 실패 - 직접 선택해서 복사하세요'));
+}
+function smsSend(){
+  const tKey=tomorrowKey();
+  const text=buildSmsText(tKey,state.orders[tKey]||[],state.salads[tKey]||[]);
+  window.open(`sms:${SHOP_TEL}?body=${encodeURIComponent(text)}`,'_self');
+}
+async function kakaoSend(){
+  const tKey=tomorrowKey();
+  const text=buildSmsText(tKey,state.orders[tKey]||[],state.salads[tKey]||[]);
+  if(navigator.share){ try{ await navigator.share({title:'도시락 주문',text}); showToast('공유 완료!'); }catch(e){} }
+  else { navigator.clipboard.writeText(text).then(()=>showToast('📋 복사됐어요 - 카카오에 붙여넣기 하세요')); }
 }
 
 /* TODAY */
@@ -493,11 +536,18 @@ function renderToday(){
   const days=['일','월','화','수','목','금','토'];
   const ts=getTimeStatus();
   const isConfirmed=!!state.confirmed[tKey];
-  const menuImg=false;
   const dosirakTotal=orders.length*state.price;
   const saladTotal=salads.length*state.price;
   const visitorTotal=visitorCount*state.price;
   const grandTotal=dosirakTotal+saladTotal+visitorTotal;
+
+  // AI 메뉴 공지 배너 (이번 주 메뉴 분석 결과)
+  const curWk=weekKey(0);
+  const notice=state.menuNotices[curWk]||'';
+  const noticeBanner=notice?`<div style="background:#FFFBE6;border:1px solid #FFD966;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+    <span style="font-size:18px">🍽️</span>
+    <span style="font-size:13px;color:#7A5C00;flex:1">${notice}</span>
+  </div>`:'';
 
   const statusBar = isConfirmed
     ? ''
@@ -514,7 +564,6 @@ function renderToday(){
     </div>
   </div>`;
 
-  // 확정 완료 상태
   if(isConfirmed){
     const shareText=buildShareText(tKey,orders,salads);
     return `<div class="confirmed-banner">
@@ -523,17 +572,20 @@ function renderToday(){
       <div class="confirmed-sub">${parseInt(tKey.split('-')[1])}월 ${parseInt(tKey.split('-')[2])}일(${days[tmr.getDay()]}) · 🍱 ${orders.length}명 · 🥗 ${salads.length}명${visitorCount?` · 👤 방문자 ${visitorCount}명`:''} · ${grandTotal.toLocaleString()}원</div>
     </div>
     <div class="share-card">
-      <div style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:10px">📤 공유 메시지</div>
-      <div class="share-preview">${shareText}</div>
-      <div class="share-actions">
-        <button class="btn-green" onclick="copyShare()">📋 복사하기</button>
+      <div style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:10px">📤 업체 발송</div>
+      <div class="share-preview">${buildSmsText(tKey,orders,salads)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <button onclick="smsSend()" style="padding:10px 8px;border:none;border-radius:10px;background:#1D9E75;color:white;font-size:13px;font-weight:600;cursor:pointer;">📱 문자로 보내기</button>
+        <button onclick="kakaoSend()" style="padding:10px 8px;border:none;border-radius:10px;background:#FEE500;color:#3C1E1E;font-size:13px;font-weight:600;cursor:pointer;">💬 카카오/공유</button>
+      </div>
+      <div style="border-top:0.5px solid #D1D1D6;padding-top:10px;display:flex;gap:8px">
+        <button class="btn-green" onclick="copyShare()" style="flex:1">📋 복사하기</button>
         <button class="btn-red" onclick="cancelConfirm()">수정하기</button>
       </div>
     </div>
     ${shopBar}`;
   }
 
-  // 헤더: 도시락/샐러드 라벨
   const toggleHeader=`<div style="display:flex;justify-content:flex-end;gap:14px;padding:0 2px 6px;margin-bottom:2px">
     <div style="width:42px;text-align:center;font-size:11px;color:#6E6E73">🍱<br>도시락</div>
     <div style="width:42px;text-align:center;font-size:11px;color:#6E6E73">🥗<br>샐러드</div>
@@ -562,7 +614,6 @@ function renderToday(){
     </div>`;
   }).join('');
 
-  // 방문자 수량 조절
   const visitorRow=`<div class="member-row" style="background:#FAFAFA;border-radius:10px;padding:10px 4px;margin-top:6px">
     <div class="member-info" style="min-width:0;flex:1">
       <div class="avatar" style="background:#FAC77520;color:#C4860A">👤</div>
@@ -581,8 +632,8 @@ function renderToday(){
   return `<div class="card">
     <div style="font-size:12px;color:#6E6E73;margin-bottom:3px">${now.getMonth()+1}월 ${now.getDate()}일(${days[now.getDay()]}) 신청 → 내일(${tmr.getMonth()+1}/${tmr.getDate()}) 도시락</div>
     <div style="font-size:15px;font-weight:500;color:#1C1C1E;margin-bottom:12px">내일 드실 분 토글 켜주세요 🍱🥗</div>
+    ${noticeBanner}
     ${statusBar}
-    ${menuImg?`<div style="margin-bottom:10px;border-radius:8px;overflow:hidden;max-height:130px;display:flex;align-items:center;justify-content:center;background:#F2F2F7"><img src="${menuImg}" style="max-width:100%;max-height:130px;object-fit:contain"></div>`:''}
     ${toggleHeader}
     ${rows}
     ${visitorRow}
@@ -613,6 +664,13 @@ function renderToday(){
 /* MENU */
 function renderMenu(){
   const off=state.menuWeek, wk=weekKey(off), img=state.menus[wk];
+  const notice=state.menuNotices[wk]||'';
+  const aiSection = img && off===0 ? `<div style="margin-top:10px">
+    ${notice?`<div style="background:#FFFBE6;border:1px solid #FFD966;border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:#7A5C00">🍽️ ${notice}</div>`:''}
+    <button onclick="analyzeMenuAI()" style="width:100%;padding:10px;background:#1C1C1E;color:white;border:none;border-radius:10px;font-size:13px;cursor:pointer;font-weight:500">
+      ✨ AI 메뉴 한줄 공지 ${notice?'다시 ':''}생성
+    </button>
+  </div>` : '';
   return `<div class="week-tabs">
     <button class="week-tab ${off===0?'active':''}" onclick="state.menuWeek=0;render()">이번 주</button>
     <button class="week-tab ${off===1?'active':''}" onclick="state.menuWeek=1;render()">다음 주</button>
@@ -621,7 +679,8 @@ function renderMenu(){
   <div class="menu-upload-area" onclick="triggerUpload('${wk}')">
     ${img?`<img src="${img}" alt="메뉴판">`:`<div class="upload-hint"><div class="icon">📷</div><div style="font-weight:500">메뉴판 사진 올리기</div><p style="margin-top:4px;font-size:12px">클릭하여 이미지 선택</p></div>`}
   </div>
-  ${img?`<div class="menu-actions"><button class="btn-outline" onclick="triggerUpload('${wk}')">사진 교체</button><button class="btn-danger" onclick="deleteMenu('${wk}')">삭제</button></div>`:''}`;
+  ${img?`<div class="menu-actions"><button class="btn-outline" onclick="triggerUpload('${wk}')">사진 교체</button><button class="btn-danger" onclick="deleteMenu('${wk}')">삭제</button></div>`:''}
+  ${aiSection}`;
 }
 let pendingWk=null;
 function triggerUpload(wk){ pendingWk=wk; document.getElementById('fileInput').click(); }
@@ -640,6 +699,43 @@ document.getElementById('fileInput').addEventListener('change',async function(e)
 });
 function deleteMenu(wk){ if(!confirm('메뉴판 사진을 삭제할까요?'))return; delete state.menus[wk]; deleteMenuStorage(wk); render(); }
 
+// ── AI 메뉴 분석 ────────────────────────────────────
+async function analyzeMenuAI(){
+  const wk=weekKey(0), img=state.menus[wk];
+  if(!img){ showToast('이번 주 메뉴 사진이 없어요'); return; }
+  const btn=document.querySelector('button[onclick="analyzeMenuAI()"]');
+  if(btn){ btn.disabled=true; btn.textContent='🤖 AI 분석 중...'; }
+  try{
+    // 이미지 → base64
+    const imgRes=await fetch(img);
+    const blob=await imgRes.blob();
+    const base64=await new Promise(res=>{
+      const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.readAsDataURL(blob);
+    });
+    const mimeType=blob.type||'image/jpeg';
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:200,
+        messages:[{role:'user',content:[
+          {type:'image',source:{type:'base64',media_type:mimeType,data:base64}},
+          {type:'text',text:'이 도시락 메뉴판 사진을 보고, 이번 주 대표 메뉴를 딱 한 줄로 요약해줘. 예시: "이번 주 메뉴: 갈비찜·잡채·계란말이 외 2찬" 형식으로, 한국어로만, 30자 이내로.'}
+        ]}]
+      })
+    });
+    const data=await res.json();
+    const notice=data.content?.[0]?.text?.trim()||'';
+    if(notice){
+      state.menuNotices[wk]=notice;
+      dbRef.child('menuNotices').child(wk.replace(/[^a-zA-Z0-9]/g,'_')).set(notice);
+      showToast('✅ AI 공지 생성 완료!');
+      render();
+    } else { showToast('❌ 분석 실패 - 다시 시도해주세요'); }
+  } catch(e){ console.error(e); showToast('❌ 오류 발생 - 인터넷 확인해주세요'); if(btn){btn.disabled=false;btn.textContent='✨ AI 메뉴 한줄 공지 생성';} }
+}
+
 /* CALENDAR */
 function renderCalendar(){
   const {calYear:y,calMonth:m,selectedDay:sel}=state;
@@ -651,12 +747,17 @@ function renderCalendar(){
   for(let d=1;d<=last;d++){
     const key=gk(y,m,d), ord=state.orders[key]||[], sal=state.salads[key]||[];
     const isT=key===tk, isSel=key===sel;
+    const hday=isHoliday(key), hdayName=holidayName(key);
+    const dow=new Date(y,m,d).getDay(); // 0=일, 6=토
+    const isSun=dow===0, isSat=dow===6;
     const dosirakDots=ord.map(nm=>`<div class="cal-dot" style="background:${getAC(nm)}"></div>`).join('');
     const saladDots=sal.map(nm=>`<div class="cal-dot" style="background:#E8A4BE;border:1px solid #C76B8A"></div>`).join('');
     const isConf=!!state.confirmed[key];
     const hasAny=ord.length||sal.length;
-    cells+=`<div class="cal-cell ${isT?'today-cell':''} ${isSel?'selected-cell':''} ${hasAny&&!isSel?'has-ord':''}" onclick="selectDay('${key}')">
-      <div class="cal-num">${d}${isConf?' ✓':''}</div>
+    const numColor=hday||isSun?'#E74C3C':isSat?'#2980B9':'';
+    cells+=`<div class="cal-cell ${isT?'today-cell':''} ${isSel?'selected-cell':''} ${hasAny&&!isSel?'has-ord':''} ${hday?'holiday-cell':''}" onclick="selectDay('${key}')">
+      <div class="cal-num" style="${numColor?`color:${numColor};font-weight:500`:''}">${d}${isConf?' ✓':''}</div>
+      ${hday?`<div style="font-size:8px;color:#E74C3C;line-height:1.1;margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${hdayName}</div>`:''}
       <div class="cal-dots">${dosirakDots}${saladDots}</div>
       ${hasAny?`<div class="cal-cnt">${ord.length?`🍱${ord.length}`:''}${ord.length&&sal.length?' ':''}${sal.length?`🥗${sal.length}`:''}</div>`:''}
     </div>`;
@@ -715,9 +816,6 @@ function renderCalendar(){
     </div>`;
   }
 
-  const tomorrowK=tomorrowKey();
-  const isTomorrowSel=sel===tomorrowK;
-
   return `<div class="cal-nav-row">
     <button class="nav-btn" onclick="moveMonth(-1)">‹</button>
     <span class="cal-title-text">${y}년 ${m+1}월</span>
@@ -729,7 +827,10 @@ function renderCalendar(){
   </div>
   <div class="cal-grid">${dlabels}${cells}</div>
   ${panel}
-  <div class="legend" style="margin-top:12px">${state.members.map(nm=>`<div class="legend-item"><div class="legend-dot" style="background:${getAC(nm)}"></div>${nm}</div>`).join('')}</div>`;
+  <div class="legend" style="margin-top:12px">
+    <div class="legend-item"><div class="legend-dot" style="background:#E74C3C"></div>공휴일</div>
+    ${state.members.map(nm=>`<div class="legend-item"><div class="legend-dot" style="background:${getAC(nm)}"></div>${nm}</div>`).join('')}
+  </div>`;
 }
 function selectDay(key){ state.selectedDay=state.selectedDay===key?null:key; render(); }
 function moveMonth(d){ state.calMonth+=d; if(state.calMonth>11){state.calMonth=0;state.calYear++;} if(state.calMonth<0){state.calMonth=11;state.calYear--;} state.selectedDay=null; render(); }
@@ -785,16 +886,36 @@ function renderStats(){
       <div style="font-size:11px;color:#1D9E75">${settledCount}명 정산완료 / ${state.members.length}명</div>
     </div>
   </div>
+  <div style="background:#F0F7FF;border:1px solid #B5D4F4;border-radius:14px;padding:12px 16px;margin-bottom:12px">
+    <div style="font-size:11px;color:#185FA5;margin-bottom:6px;font-weight:500">💳 정산 계좌</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div>
+        <div style="font-size:15px;font-weight:600;color:#1C1C1E;letter-spacing:0.5px">국민 213602-04-125080</div>
+        <div style="font-size:12px;color:#6E6E73;margin-top:2px">예금주: 최영미</div>
+      </div>
+      <button onclick="copyAccount()" style="flex-shrink:0;padding:8px 14px;background:#185FA5;color:white;border:none;border-radius:10px;font-size:13px;font-weight:500;cursor:pointer;">복사</button>
+    </div>
+  </div>
   <div class="person-table">${rows||'<div style="text-align:center;padding:2rem;color:#6E6E73;font-size:13px">데이터 없음</div>'}</div>`;
 }
 function moveStats(d){ state.statsMonth+=d; if(state.statsMonth>11){state.statsMonth=0;state.statsYear++;} if(state.statsMonth<0){state.statsMonth=11;state.statsYear--;} render(); }
+function copyAccount(){
+  navigator.clipboard.writeText('국민 213602-04-125080 최영미')
+    .then(()=>showToast('💳 계좌번호 복사됐어요!'))
+    .catch(()=>showToast('복사 실패 - 직접 선택해서 복사하세요'));
+}
 
 /* MEMBERS */
 function renderMembers(){
   const rows=state.members.map((m,i)=>{
     const ac=getAC(m);
+    const isFirst=i===0, isLast=i===state.members.length-1;
     return `<div class="mlist-row">
-      <div class="member-info"><div class="avatar" style="background:${ac}20;color:${ac}">${getInit(m)}</div><span style="font-size:14px">${m}</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;margin-right:8px;flex-shrink:0">
+        <button onclick="moveMember(${i},-1)" ${isFirst?'disabled':''} style="width:22px;height:22px;border-radius:5px;border:0.5px solid ${isFirst?'#E5E5EA':'#D1D1D6'};background:${isFirst?'#F2F2F7':'#fff'};cursor:${isFirst?'default':'pointer'};font-size:10px;color:${isFirst?'#C7C7CC':'#3C3C43'};display:flex;align-items:center;justify-content:center;padding:0;line-height:1">▲</button>
+        <button onclick="moveMember(${i},1)" ${isLast?'disabled':''} style="width:22px;height:22px;border-radius:5px;border:0.5px solid ${isLast?'#E5E5EA':'#D1D1D6'};background:${isLast?'#F2F2F7':'#fff'};cursor:${isLast?'default':'pointer'};font-size:10px;color:${isLast?'#C7C7CC':'#3C3C43'};display:flex;align-items:center;justify-content:center;padding:0;line-height:1">▼</button>
+      </div>
+      <div class="member-info" style="flex:1"><div class="avatar" style="background:${ac}20;color:${ac}">${getInit(m)}</div><span style="font-size:14px">${m}</span></div>
       <button class="del-btn" onclick="delMember(${i})">삭제</button>
     </div>`;
   }).join('');
@@ -803,16 +924,50 @@ function renderMembers(){
     <input class="price-input" type="number" id="priceInput" value="${state.price}" step="100">
     <button class="save-btn" onclick="savePrice()">저장</button>
   </div>
+  <div style="font-size:12px;color:#6E6E73;margin-bottom:8px;padding:0 2px">▲▼ 버튼으로 순서 조절 (직렬 순서대로 정렬)</div>
   <div class="mlist">${rows}</div>
   <div class="add-row">
     <input id="newName" type="text" placeholder="팀원 이름" onkeydown="if(event.key==='Enter')addMember()">
     <button class="add-btn" onclick="addMember()">+ 추가</button>
   </div>`;
 }
+
 function savePrice(){ const v=parseInt(document.getElementById('priceInput').value); if(v>0){state.price=v;save();showToast(`도시락 ${v.toLocaleString()}원으로 저장됐어요`);} }
-function saveSaladPrice(){ const v=parseInt(document.getElementById('saladPriceInput').value); if(v>0){state.price=v;save();showToast(`샐러드 ${v.toLocaleString()}원으로 저장됐어요`);} }
+function moveMember(i, dir){
+  const j = i + dir;
+  if(j < 0 || j >= state.members.length) return;
+  [state.members[i], state.members[j]] = [state.members[j], state.members[i]];
+  save(); render();
+  // 스크롤 유지 - 설정 탭 내 위치 보정
+  setTimeout(()=>{
+    const rows = document.querySelectorAll('.mlist-row');
+    if(rows[j]) rows[j].scrollIntoView({block:'nearest', behavior:'smooth'});
+  }, 50);
+}
 function addMember(){ const inp=document.getElementById('newName'); const n=inp.value.trim(); if(!n||state.members.includes(n))return; state.members.push(n); inp.value=''; save();render(); }
-function delMember(i){ if(!confirm(`'${state.members[i]}' 삭제할까요?`))return; state.members.splice(i,1); save();render(); }
+
+// ✅ 수정된 delMember: 이름 직접 입력 확인 방식
+function delMember(i){
+  const name = state.members[i];
+  showModal(`<div class="modal-box">
+    <div class="modal-title">팀원 삭제</div>
+    <div class="modal-sub">정말 삭제하려면 아래에 <strong>${name}</strong> 을(를) 그대로 입력해주세요.</div>
+    <input id="delConfirmInput" type="text" placeholder="${name}"
+      style="width:100%;padding:10px 12px;border:1.5px solid #D1D1D6;border-radius:10px;font-size:15px;margin-bottom:14px;box-sizing:border-box;"
+      oninput="(function(v){
+        var btn=document.getElementById('delConfirmBtn');
+        var match=v==='${name}';
+        btn.disabled=!match;
+        btn.style.background=match?'#993C1D':'#CCCCCC';
+      })(this.value)">
+    <div class="modal-actions">
+      <button class="modal-btn-cancel" onclick="hideModal()">취소</button>
+      <button id="delConfirmBtn" class="modal-btn-ok" disabled style="background:#CCCCCC;cursor:not-allowed" onclick="doDelMember(${i})">삭제</button>
+    </div>
+  </div>`);
+  setTimeout(()=>{ const el=document.getElementById('delConfirmInput'); if(el) el.focus(); }, 100);
+}
+function doDelMember(i){ state.members.splice(i,1); save(); hideModal(); render(); }
 
 function render(){
   const el=document.getElementById('tabContent');
