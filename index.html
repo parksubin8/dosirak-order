@@ -216,7 +216,7 @@ input[type=file] { display: none; }
 const PRICE_DEFAULT = 7700;
 const SHOP_NAME = '다온도시락';
 const SHOP_TEL = '010-3036-6611';
-const COLORS = ['#9FE1CB','#B5D4F4','#FAC775','#F4C0D1','#C0DD97','#CEB3F0','#F5C4B3','#5DCAA5','#F7C1C1','#D3D1C7'];
+const COLORS = ['#E74C3C','#808080','#F39C12','#9B59B6','#27AE60','#1ABC9C','#E91E63','#D35400','#2980B9','#16A085'];
 const MEMBER_DEFAULT = ['남정','최규호','오세윤','서기영','김진용','김태완','서유정','박수빈','송호범'];
 
 let state = {
@@ -240,7 +240,7 @@ let state = {
 function gk(y,m,d){ return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
 function todayKey(){ const n=new Date(); return gk(n.getFullYear(),n.getMonth(),n.getDate()); }
 function tomorrowKey(){ const n=new Date(); n.setDate(n.getDate()+1); return gk(n.getFullYear(),n.getMonth(),n.getDate()); }
-function getAC(name){ let h=0; for(let c of name) h=(h+c.charCodeAt(0))%COLORS.length; return COLORS[h]; }
+function getAC(name){ const i=state.members.indexOf(name); return COLORS[i>=0?i%COLORS.length:COLORS.length-1]; }
 function getInit(name){ return name[0]; }
 
 // 시간 상태: 'open'(4시前 신청가능), 'change'(당일4시~익일9:30 변경가능), 'closed'(9:30이후 완전마감)
