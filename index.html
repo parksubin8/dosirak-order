@@ -217,12 +217,14 @@ const PRICE_DEFAULT = 7700;
 const SHOP_NAME = '다온도시락';
 const SHOP_TEL = '010-3036-6611';
 const COLORS = ['#9FE1CB','#B5D4F4','#FAC775','#F4C0D1','#C0DD97','#CEB3F0','#F5C4B3','#5DCAA5','#F7C1C1','#D3D1C7'];
-const MEMBER_DEFAULT = ['남정','최규호','오세윤','서기영','김진용','김태완','서유정','박수빈','송호범','방문자'];
+const MEMBER_DEFAULT = ['남정','최규호','오세윤','서기영','김진용','김태완','서유정','박수빈','송호범'];
 
 let state = {
   members: [...MEMBER_DEFAULT],
   orders: {},
   salads: {},
+  visitors: {},   // dateKey → 방문자 수
+  settled: {},    // 'YYYY-MM' → {name: true/false}
   confirmed: {},
   menus: {},
   price: PRICE_DEFAULT,
@@ -254,18 +256,26 @@ function getTimeStatus(){
 // ── Firebase 실시간 연동 ──────────────────────────
 let firebaseReady = false;
 function initFirebase(){
+  loadMenusLocal();
+  render();
+
   dbRef.on('value', (snapshot) => {
     const data = snapshot.val();
     if(data){
       state.members   = data.members   || [...MEMBER_DEFAULT];
       state.orders    = data.orders    || {};
       state.salads    = data.salads    || {};
+      state.visitors  = data.visitors  || {};
+      state.settled   = data.settled   || {};
       state.confirmed = data.confirmed || {};
       state.price     = data.price     || PRICE_DEFAULT;
     }
     firebaseReady = true;
     loadMenusLocal();
     render();
+  }, (error) => {
+    console.warn('Firebase 연결 실패:', error);
+    showToast('⚠️ 실시간 연동 안 됨 - 오프라인 모드');
   });
 }
 
@@ -274,6 +284,8 @@ function save(){
     members:   state.members,
     orders:    state.orders,
     salads:    state.salads,
+    visitors:  state.visitors,
+    settled:   state.settled,
     confirmed: state.confirmed,
     price:     state.price
   }).catch(e => showToast('저장 실패 - 인터넷 연결 확인'));
@@ -347,6 +359,20 @@ function switchTab(t){
   }
   document.querySelectorAll('.tab').forEach((el,i)=>el.classList.toggle('active',['today','menu','calendar','stats','members'][i]===t));
   render();
+}
+
+function changeVisitor(key, delta){
+  const cur = state.visitors[key] || 0;
+  const next = Math.max(0, cur + delta);
+  if(next === 0) delete state.visitors[key];
+  else state.visitors[key] = next;
+  save(); render();
+}
+
+function toggleSettled(yearMonth, name){
+  if(!state.settled[yearMonth]) state.settled[yearMonth] = {};
+  state.settled[yearMonth][name] = !state.settled[yearMonth][name];
+  save(); render();
 }
 
 function toggleOrder(key,name){
@@ -446,14 +472,16 @@ function copyShare(){
 /* TODAY */
 function renderToday(){
   const tKey=tomorrowKey(), orders=state.orders[tKey]||[], salads=state.salads[tKey]||[];
+  const visitorCount = state.visitors[tKey] || 0;
   const now=new Date(), tmr=new Date(); tmr.setDate(tmr.getDate()+1);
   const days=['일','월','화','수','목','금','토'];
   const ts=getTimeStatus();
   const isConfirmed=!!state.confirmed[tKey];
-  const menuImg=state.menus[weekKey(0)]||state.menus[weekKey(1)];
+  const menuImg=false;
   const dosirakTotal=orders.length*state.price;
   const saladTotal=salads.length*state.price;
-  const grandTotal=dosirakTotal+saladTotal;
+  const visitorTotal=visitorCount*state.price;
+  const grandTotal=dosirakTotal+saladTotal+visitorTotal;
 
   const statusBar = isConfirmed
     ? ''
@@ -476,7 +504,7 @@ function renderToday(){
     return `<div class="confirmed-banner">
       <div class="confirmed-icon">✅</div>
       <div class="confirmed-title">주문 확정 완료!</div>
-      <div class="confirmed-sub">${parseInt(tKey.split('-')[1])}월 ${parseInt(tKey.split('-')[2])}일(${days[tmr.getDay()]}) · 🍱 ${orders.length}명 · 🥗 ${salads.length}명 · ${grandTotal.toLocaleString()}원</div>
+      <div class="confirmed-sub">${parseInt(tKey.split('-')[1])}월 ${parseInt(tKey.split('-')[2])}일(${days[tmr.getDay()]}) · 🍱 ${orders.length}명 · 🥗 ${salads.length}명${visitorCount?` · 👤 방문자 ${visitorCount}명`:''} · ${grandTotal.toLocaleString()}원</div>
     </div>
     <div class="share-card">
       <div style="font-size:13px;font-weight:500;color:#1C1C1E;margin-bottom:10px">📤 공유 메시지</div>
@@ -518,6 +546,22 @@ function renderToday(){
     </div>`;
   }).join('');
 
+  // 방문자 수량 조절
+  const visitorRow=`<div class="member-row" style="background:#FAFAFA;border-radius:10px;padding:10px 4px;margin-top:6px">
+    <div class="member-info" style="min-width:0;flex:1">
+      <div class="avatar" style="background:#FAC77520;color:#C4860A">👤</div>
+      <div>
+        <div class="mname">방문자</div>
+        ${visitorCount>0?`<div class="mprice">${(visitorCount*state.price).toLocaleString()}원</div>`:'<div class="mprice">해당 날 현장 입금</div>'}
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+      <button onclick="changeVisitor('${tKey}',-1)" style="width:30px;height:30px;border-radius:50%;border:1.5px solid #D1D1D6;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#555">−</button>
+      <span style="font-size:18px;font-weight:600;min-width:24px;text-align:center;color:#1C1C1E">${visitorCount}</span>
+      <button onclick="changeVisitor('${tKey}',1)" style="width:30px;height:30px;border-radius:50%;border:1.5px solid #1D9E75;background:#1D9E75;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:white">+</button>
+    </div>
+  </div>`;
+
   return `<div class="card">
     <div style="font-size:12px;color:#6E6E73;margin-bottom:3px">${now.getMonth()+1}월 ${now.getDate()}일(${days[now.getDay()]}) 신청 → 내일(${tmr.getMonth()+1}/${tmr.getDate()}) 도시락</div>
     <div style="font-size:15px;font-weight:500;color:#1C1C1E;margin-bottom:12px">내일 드실 분 토글 켜주세요 🍱🥗</div>
@@ -525,7 +569,8 @@ function renderToday(){
     ${menuImg?`<div style="margin-bottom:10px;border-radius:8px;overflow:hidden;max-height:130px;display:flex;align-items:center;justify-content:center;background:#F2F2F7"><img src="${menuImg}" style="max-width:100%;max-height:130px;object-fit:contain"></div>`:''}
     ${toggleHeader}
     ${rows}
-    <div class="summary-row" style="flex-direction:column;gap:6px;align-items:stretch">
+    ${visitorRow}
+    <div class="summary-row" style="flex-direction:column;gap:6px;align-items:stretch;margin-top:12px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <span style="font-size:12px;color:#6E6E73">🍱 도시락 ${orders.length}명</span>
         <span style="font-size:14px;font-weight:500;color:#1D9E75">${dosirakTotal.toLocaleString()}<small style="font-size:11px;color:#6E6E73">원</small></span>
@@ -534,12 +579,16 @@ function renderToday(){
         <span style="font-size:12px;color:#6E6E73">🥗 샐러드 ${salads.length}명</span>
         <span style="font-size:14px;font-weight:500;color:#C76B8A">${saladTotal.toLocaleString()}<small style="font-size:11px;color:#6E6E73">원</small></span>
       </div>
+      ${visitorCount>0?`<div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:12px;color:#6E6E73">👤 방문자 ${visitorCount}명</span>
+        <span style="font-size:14px;font-weight:500;color:#C4860A">${visitorTotal.toLocaleString()}<small style="font-size:11px;color:#6E6E73">원</small></span>
+      </div>`:''}
       <div style="border-top:0.5px solid #D1D1D6;padding-top:6px;display:flex;justify-content:space-between;align-items:center">
         <span style="font-size:13px;font-weight:500;color:#1C1C1E">합계</span>
         <span style="font-size:18px;font-weight:500;color:#1C1C1E">${grandTotal.toLocaleString()}<small style="font-size:11px;color:#6E6E73">원</small></span>
       </div>
     </div>
-    <button class="confirm-btn" onclick="confirmOrder()" ${(orders.length+salads.length)===0?'disabled':''}>✅ 주문 확정하기</button>
+    <button class="confirm-btn" onclick="confirmOrder()" ${(orders.length+salads.length+visitorCount)===0?'disabled':''}>✅ 주문 확정하기</button>
     <button onclick="switchTab('calendar')" style="width:100%;margin-top:8px;padding:10px;background:transparent;border:1px solid #1D9E75;border-radius:10px;color:#1D9E75;font-size:13px;cursor:pointer;">📅 월별 현황에서 수정하기</button>
   </div>
   ${shopBar}`;
@@ -615,7 +664,8 @@ function renderCalendar(){
         </div>
       </div>`;
     }).join('');
-    const panelTotal=(ord.length*state.price)+(sal.length*state.price);
+    const visCount = state.visitors[sel]||0;
+    const panelTotal=(ord.length*state.price)+(sal.length*state.price)+(visCount*state.price);
     panel=`<div class="day-panel">
       <div class="day-panel-header">
         <span class="day-panel-title">📅 ${parseInt(sm)}월 ${parseInt(sd)}일(${dayName}) ${sel===tomorrowKey()?'<span style="font-size:11px;background:#1D9E75;color:white;padding:2px 7px;border-radius:10px;margin-left:4px">내일</span>':''} 수정</span>
@@ -624,8 +674,19 @@ function renderCalendar(){
       <div style="font-size:12px;color:#1D9E75;background:#EAF3DE;padding:6px 10px;border-radius:6px;margin-bottom:10px">✏️ 과거/미래 날짜도 자유롭게 수정할 수 있어요</div>
       ${toggleHeader}
       ${rows}
+      <div class="member-row" style="background:#FAFAFA;border-radius:10px;padding:8px 4px;margin-top:6px">
+        <div class="member-info" style="flex:1">
+          <div class="avatar" style="background:#FAC77520;color:#C4860A;width:30px;height:30px;font-size:13px">👤</div>
+          <span style="font-size:13px">방문자</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+          <button onclick="changeVisitor('${sel}',-1)" style="width:28px;height:28px;border-radius:50%;border:1.5px solid #D1D1D6;background:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#555">−</button>
+          <span style="font-size:16px;font-weight:600;min-width:20px;text-align:center;color:#1C1C1E">${visCount}</span>
+          <button onclick="changeVisitor('${sel}',1)" style="width:28px;height:28px;border-radius:50%;border:1.5px solid #1D9E75;background:#1D9E75;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:white">+</button>
+        </div>
+      </div>
       <div class="summary-row">
-        <div><div class="sum-label">🍱 ${ord.length}명 / 🥗 ${sal.length}명</div></div>
+        <div><div class="sum-label">🍱 ${ord.length}명 / 🥗 ${sal.length}명${visCount?` / 👤 ${visCount}명`:''}</div></div>
         <div style="text-align:right"><div class="sum-label">합계</div><div class="sum-val" style="color:#1D9E75">${panelTotal.toLocaleString()}<small>원</small></div></div>
       </div>
     </div>`;
@@ -653,39 +714,53 @@ function moveMonth(d){ state.calMonth+=d; if(state.calMonth>11){state.calMonth=0
 /* STATS */
 function renderStats(){
   const {statsYear:y,statsMonth:m}=state;
+  const yearMonth=`${y}-${String(m+1).padStart(2,'0')}`;
   const last=new Date(y,m+1,0).getDate();
-  let totalDays=0,totalOrders=0,totalSalads=0;
+  let totalOrders=0,totalSalads=0,totalVisitors=0;
   const pp={}; const ps={}; state.members.forEach(n=>{pp[n]=0;ps[n]=0;});
   for(let d=1;d<=last;d++){
     const ord=state.orders[gk(y,m,d)]||[];
     const sal=state.salads[gk(y,m,d)]||[];
-    if(ord.length||sal.length) totalDays++;
-    totalOrders+=ord.length; totalSalads+=sal.length;
+    const vis=state.visitors[gk(y,m,d)]||0;
+    totalOrders+=ord.length; totalSalads+=sal.length; totalVisitors+=vis;
     ord.forEach(n=>{if(pp[n]!==undefined)pp[n]++;});
     sal.forEach(n=>{if(ps[n]!==undefined)ps[n]++;});
   }
   const maxC=Math.max(1,...Object.values(pp));
+  const settledMap=state.settled[yearMonth]||{};
   const rows=state.members.map(nm=>{
     const cnt=pp[nm]||0, scnt=ps[nm]||0, pct=Math.round(cnt/maxC*100), ac=getAC(nm);
-    const amt=(cnt*state.price)+(scnt*state.price);
-    return `<div class="person-row">
+    const amt=(cnt+scnt)*state.price;
+    const isSettled=!!settledMap[nm];
+    return `<div class="person-row" style="${isSettled?'opacity:0.55':''}">
       <div class="avatar" style="background:${ac}20;color:${ac};width:28px;height:28px;font-size:11px">${getInit(nm)}</div>
       <div class="p-name">${nm}</div>
       <div class="p-bar-wrap"><div class="p-bar-bg"><div class="p-bar" style="width:${pct}%"></div></div></div>
       <span class="p-cnt" style="min-width:52px">🍱${cnt} 🥗${scnt}</span>
-      <span class="p-amt">${amt.toLocaleString()}원</span>
+      <span class="p-amt" style="min-width:62px">${amt.toLocaleString()}원</span>
+      <button onclick="toggleSettled('${yearMonth}','${nm}')" style="flex-shrink:0;padding:4px 8px;border-radius:20px;border:1px solid ${isSettled?'#1D9E75':'#D1D1D6'};background:${isSettled?'#EAF3DE':'transparent'};color:${isSettled?'#1D9E75':'#999'};font-size:11px;cursor:pointer;white-space:nowrap">
+        ${isSettled?'✅ 정산완료':'미정산'}
+      </button>
     </div>`;
   }).join('');
-  const grandTotal=(totalOrders*state.price)+(totalSalads*state.price);
+  const grandTotal=(totalOrders+totalSalads+totalVisitors)*state.price;
+  const settledCount=Object.values(settledMap).filter(Boolean).length;
   return `<div class="cal-nav-row">
     <button class="nav-btn" onclick="moveStats(-1)">‹</button>
     <span class="cal-title-text">${y}년 ${m+1}월</span>
     <button class="nav-btn" onclick="moveStats(1)">›</button>
   </div>
   <div class="stats-cards">
-    <div class="stat-card"><div class="stat-lbl">🍱 도시락 건</div><div class="stat-val">${totalOrders}<small>건</small></div></div>
-    <div class="stat-card"><div class="stat-lbl">🥗 샐러드 건</div><div class="stat-val">${totalSalads}<small>건</small></div></div>
-    <div class="stat-card"><div class="stat-lbl">총 금액</div><div class="stat-val" style="font-size:15px">${grandTotal.toLocaleString()}<small>원</small></div></div>
+    <div class="stat-card"><div class="stat-lbl">🍱 도시락</div><div class="stat-val">${totalOrders}<small>건</small></div></div>
+    <div class="stat-card"><div class="stat-lbl">🥗 샐러드</div><div class="stat-val">${totalSalads}<small>건</small></div></div>
+    <div class="stat-card"><div class="stat-lbl">👤 방문자</div><div class="stat-val">${totalVisitors}<small>명</small></div></div>
+  </div>
+  <div style="background:#FFFFFF;border:0.5px solid #D1D1D6;border-radius:14px;padding:12px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-size:13px;color:#6E6E73">이달 총액</span>
+    <div style="text-align:right">
+      <div style="font-size:20px;font-weight:600;color:#1C1C1E">${grandTotal.toLocaleString()}원</div>
+      <div style="font-size:11px;color:#1D9E75">${settledCount}명 정산완료 / ${state.members.length}명</div>
+    </div>
   </div>
   <div class="person-table">${rows||'<div style="text-align:center;padding:2rem;color:#6E6E73;font-size:13px">데이터 없음</div>'}</div>`;
 }
