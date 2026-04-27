@@ -269,9 +269,15 @@ function initFirebase(){
       state.settled   = data.settled   || {};
       state.confirmed = data.confirmed || {};
       state.price     = data.price     || PRICE_DEFAULT;
+      // 메뉴 이미지 URL (Cloudinary)
+      if(data.menus){
+        Object.keys(data.menus).forEach(k=>{
+          const wk=k.replace(/_/g,'-').replace('W-','W');
+          state.menus[wk]=data.menus[k];
+        });
+      }
     }
     firebaseReady = true;
-    loadMenusLocal();
     render();
   }, (error) => {
     console.warn('Firebase 연결 실패:', error);
@@ -291,21 +297,31 @@ function save(){
   }).catch(e => showToast('저장 실패 - 인터넷 연결 확인'));
 }
 
-// 메뉴 이미지는 용량이 커서 기기 로컬에 저장
-function loadMenusLocal(){
-  try{
-    const m0=localStorage.getItem('dosirak-menu-'+weekKey(0));
-    const m1=localStorage.getItem('dosirak-menu-'+weekKey(1));
-    if(m0) state.menus[weekKey(0)]=m0;
-    if(m1) state.menus[weekKey(1)]=m1;
-  }catch(e){}
+// ── Cloudinary 메뉴 이미지 업로드 ──────────────────
+const CLOUDINARY_CLOUD = 'dkeapeze3';
+const CLOUDINARY_PRESET = 'vidcqx51';
+
+async function uploadToCloudinary(file){
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_PRESET);
+  formData.append('folder', 'dosirak-menu');
+  showToast('📤 사진 업로드 중...');
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
+    method: 'POST', body: formData
+  });
+  const data = await res.json();
+  return data.secure_url;
 }
-function saveMenu(wk,dataUrl){
-  try{ localStorage.setItem('dosirak-menu-'+wk, dataUrl); }catch(e){}
+
+// 메뉴 URL을 Firebase에 저장 (모두 공유)
+function saveMenu(wk, url){
+  dbRef.child('menus').child(wk.replace(/[^a-zA-Z0-9]/g,'_')).set(url);
 }
 function deleteMenuStorage(wk){
-  try{ localStorage.removeItem('dosirak-menu-'+wk); }catch(e){}
+  dbRef.child('menus').child(wk.replace(/[^a-zA-Z0-9]/g,'_')).remove();
 }
+function loadMenusLocal(){ /* Firebase에서 자동 로드됨 */ }
 
 function getWeekRange(off){
   const now=new Date(), day=now.getDay();
@@ -609,11 +625,18 @@ function renderMenu(){
 }
 let pendingWk=null;
 function triggerUpload(wk){ pendingWk=wk; document.getElementById('fileInput').click(); }
-document.getElementById('fileInput').addEventListener('change',function(e){
+document.getElementById('fileInput').addEventListener('change',async function(e){
   const file=e.target.files[0]; if(!file)return;
-  const reader=new FileReader();
-  reader.onload=async(ev)=>{ state.menus[pendingWk]=ev.target.result; await saveMenu(pendingWk,ev.target.result); render(); };
-  reader.readAsDataURL(file); this.value='';
+  try{
+    const url = await uploadToCloudinary(file);
+    state.menus[pendingWk] = url;
+    saveMenu(pendingWk, url);
+    showToast('✅ 메뉴 사진 업로드 완료!');
+    render();
+  } catch(err){
+    showToast('❌ 업로드 실패 - 다시 시도해주세요');
+  }
+  this.value='';
 });
 function deleteMenu(wk){ if(!confirm('메뉴판 사진을 삭제할까요?'))return; delete state.menus[wk]; deleteMenuStorage(wk); render(); }
 
